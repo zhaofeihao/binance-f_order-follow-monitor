@@ -1,0 +1,138 @@
+熬鹰资本公开操作记录监控
+
+目标项目：https://www.binance.com/zh-CN/copy-trading/lead-details/5075281354358777856
+Python 3.9+，macOS / Linux，仅标准库，无需 pip 安装，无需币安账号或 API Key。
+
+服务器部署请先看同目录《服务器部署.txt》，附有可直接安装的 binance-monitor.service。
+
+环境配置文件
+
+程序启动时自动读取 monitor.py 同目录的 .env，与当前终端工作目录无关。
+首次使用可将 .env.example 复制为 .env（不要覆盖已经填写的 .env）：
+    cp -n .env.example .env
+    chmod 600 .env
+编辑 .env，填入 FEISHU_WEBHOOK_URL 和 FEISHU_SECRET；可调整 MONITOR_INTERVAL 等参数。
+命令行参数优先于进程环境变量，进程环境变量优先于 .env，最后使用程序默认值。
+支持单行 KEY=value、单双引号、export 前缀和 # 注释；不执行 shell、不展开变量，
+也不处理反斜杠转义。值中含 # 或空格时建议使用引号。
+可用 --env-file /绝对路径/配置文件 显式指定文件，指定文件缺失会报错。
+MONITOR_DATA_DIR 相对路径按脚本目录解析；命令行 --data-dir 相对路径仍按当前工作目录解析。
+改动配置后需要重启进程，.env 已加入 Git 忽略规则；发布包只包含空值配置示例。
+
+一、启动
+
+Mac：双击同目录 start.command，保持终端开启；每轮结束约 30 秒后再检查，并请求桌面提醒。
+如果系统禁止双击，在终端进入该目录执行：
+    python3 monitor.py --desktop
+macOS 通知可能需要在系统设置中允许终端 / 脚本编辑器通知；勿扰模式可能隐藏提醒。
+终端及 data/monitor.log 始终记录新操作。按 Ctrl+C 停止。
+
+Linux 或只需日志：
+    python3 monitor.py
+
+只验证接口和显示最近 3 条（不保存状态、不发送通知）：
+    python3 monitor.py --check
+
+单次检查并保存状态：
+    python3 monitor.py --once
+
+改为每分钟检查：
+    python3 monitor.py --interval 60
+
+二、运行方式及数据
+
+首次成功读取完整可见历史，只建立基准，避免把旧记录当作新操作。
+此后新增记录、成交数量/均价等业务字段更新都会写入本地并提醒。
+重启使用同一 data 目录，会继续去重并补查停机期间仍然可见的记录。
+正常检查回看上次成功检查之前 24 小时；每小时完整回查可见历史，补查更晚公开的记录。
+分页期间首页变化、重复分页、格式错误或超过默认 100 页上限，整轮不推进状态。
+每次请求间隔至少 5 秒；每轮结束等待 30 秒加少量随机间隔。
+首次建立完整基准通常需要数十秒；完整回查期间检查间隔会变长。
+因此 30 秒是检查目标，不是保证成交后 30 秒可知；还有币安公开延迟、请求和网络耗时。
+
+data/records.sqlite3：历史原始记录、持久化去重键、各通道待发通知。
+data/monitor.log：运行日志（自动轮转，最多约 8 MB）。
+data/health.json：最近检查结果、最后成功时间、待发通知数。
+--data-dir 可指定独立目录；同一目录只能运行一个进程。
+不要删除 data，否则下次会重新建立基准。数据库不会自动裁剪，长期运行请备份并关注磁盘。
+
+网络失败指数退避，通常最多 15 分钟；HTTP 403/418/429/451 至少等待 5 分钟，
+并遵守数值型 Retry-After。错误会写入日志和 health.json，不会把失败当成没有新操作。
+通知先持久化再发送；失败后重试。发送成功到状态提交之间如果进程崩溃，可能重复提醒一次。
+同一条提醒附短记录 ID，方便识别重试。通知通道必须继续启用才能清空其待发队列。
+
+三、可选 Telegram 手机通知
+
+通过 Telegram 官方 BotFather 创建机器人，先与机器人发起聊天，取得自己的 chat_id。
+在本机终端设置以下变量，然后启动（不要把真实 Token 发到聊天或提交到仓库）：
+    export TELEGRAM_BOT_TOKEN='填入你的机器人 Token'
+    export TELEGRAM_CHAT_ID='填入你的 chat_id'
+    python3 monitor.py
+也可将这两个变量填写在 .env 中。--desktop 和飞书通知可同时启用。
+配置生效后只发送新的记录和已经为该通道排队的记录，不回发所有历史。
+Telegram API：https://core.telegram.org/bots/api#sendmessage
+
+飞书 Webhook 通知（签名校验）
+
+推荐在 .env 中填写以下两个字段，无需每次 export；也支持在终端设置环境变量：
+    export FEISHU_WEBHOOK_URL='https://open.feishu.cn/open-apis/bot/v2/hook/替换成你的地址'
+    export FEISHU_SECRET='替换成你的签名密钥'
+
+先向机器人所在飞书群发送一条明确标记为测试的消息：
+    python3 monitor.py --test-feishu
+成功时程序输出“飞书接口已确认接收测试消息”，请在群内核对。
+该命令不访问币安，不创建/修改监控状态，也不触发其他通知通道。
+
+再在同一终端启动监控：
+    python3 monitor.py
+或者同时开启桌面提醒：
+    python3 monitor.py --desktop
+
+如果监控已经运行，请先 Ctrl+C 停止，修改 .env 后重新启动。
+使用原 data 目录即可保留基准与去重记录，无需清空数据。
+在 .env 中填写配置后，Finder 双击 start.command 也能自动读取配置。
+在终端 export 的变量仅由该终端启动的程序继承，且会覆盖 .env 中的同名配置。
+
+两个变量需同时设置；程序不会在代码、日志或 SQLite 中保存 URL 或 secret。
+本版本仅接受 open.feishu.cn 的 HTTPS 自定义机器人地址，机器人安全设置需开启签名校验。
+每次请求及重试都会用当前秒级时间戳重新签名，请保持本机系统时间准确。
+若机器人同时配置了关键词，建议关键词设置为“熬鹰资本”，测试和交易消息都会包含此词；
+若配置了 IP 白名单，运行脚本的出口 IP 也需匹配。
+HTTP 成功但业务返回失败时不会确认投递，通知会留在 feishu 通道队列并重试。
+已有其他通道的历史通知不会回发到飞书，启用后新记录才会进入飞书队列。
+停用飞书时请清空 .env 的两个字段，并取消进程环境中的同名变量；重启生效。
+已有待发事件会保留，重新启用后继续投递。
+
+签名实现依据飞书官方自定义机器人指南：
+https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot?lang=zh-CN
+
+四、含义与边界
+
+BUY + LONG：开多 / 加多；SELL + LONG：减多 / 平多。
+SELL + SHORT：开空 / 加空；BUY + SHORT：减空 / 平空。
+BOTH：只报告买入或卖出，不能由公开记录可靠推断开平。
+仅凭操作记录不能区分首次开仓与加仓、部分减仓与完全平仓，也不能准确还原当前全部持仓。
+操作时间优先 orderUpdateTime，缺失时使用 orderTime，统一显示北京时间。
+脚本监控成交操作记录，不监听未成交挂单、撤单、资金划转，也不执行交易。
+
+使用的是币安网页公开只读接口，而不是有稳定性承诺的官方交易 API：
+GET /bapi/futures/v1/friendly/future/copy-trade/lead-portfolio/detail?portfolioId=...
+POST /bapi/futures/v1/friendly/future/copy-trade/lead-portfolio/order-history
+请求体为 portfolioId / pageNumber / pageSize，默认每页 50 条。
+2026-11-24 在当前网络验证成功，项目昵称与 ID 已核对；positionShow=false 时操作记录仍可读取。
+公开接口未来可能变动、限制访问或隐藏记录，届时程序报错并保留状态。
+无法保证补回币安已经删除或超出可见窗口的历史；超过 24 小时才公开的记录最迟完整回查时发现。
+首次基准建立期间出现的记录可能作为历史收录，不触发通知。
+接口未提供订单 ID，使用时间、交易对、方向、成交数量、价格、盈亏等字段生成指纹；
+所有这些字段完全一致的独立记录无法区分，记录修订会作为更新提醒。
+
+五、长期运行与验证
+
+电脑睡眠、关机或退出终端后不会继续监听。要全天运行，可将整个目录复制到持续在线的
+Linux 服务器，按《服务器部署.txt》安装附带的 systemd 服务；服务器无需桌面环境。
+服务使用 /var/lib/binance-monitor 保存数据，异常退出自动重启，enable 后开机自启。
+代码目录中提供服务文件，但需要在服务器上安装后才会生效。
+
+测试：
+    python3 -m unittest -v
+覆盖持久化去重、初次静默、通知失败重试、事务回滚、分页变化和分页上限等。

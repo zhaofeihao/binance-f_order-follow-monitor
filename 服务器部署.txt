@@ -1,0 +1,111 @@
+Linux 服务器部署（systemd）
+
+可以直接运行。条件：Python 3.9+、系统时区数据库、CA 证书，以及服务器能够正常
+访问 www.binance.com 和 open.feishu.cn 的 HTTPS 接口。无需浏览器、桌面或 pip 包，
+不需要开放任何入站端口。以下安装步骤适用于 Ubuntu 22.04+ / Debian 12+。
+其他 Linux 发行版也可以运行，但安装依赖和服务管理命令需按系统调整。
+本项目当前是在 macOS 完成代码测试，尚未连接你的服务器执行安装；以服务器实际
+--check 和 --test-feishu 结果判断网络/通知是否可用。
+
+1. 上传并解压 binance-monitor.zip，进入解压后的 binance-monitor 目录。
+   不要上传本机真实 .env、日志或数据库到公开仓库。
+   若需要迁移现有监控记录，见末尾“迁移”。
+
+2. 安装系统依赖，检查运行环境：
+
+    sudo apt-get update
+    sudo apt-get install -y python3 ca-certificates tzdata
+    /usr/bin/python3 --version
+    /usr/bin/python3 -c "import sqlite3, ssl; from zoneinfo import ZoneInfo; print(ZoneInfo('Asia/Shanghai'))"
+
+3. 创建专用账号并安装程序（在解压后的目录中执行）：
+
+    id -u binance-monitor >/dev/null 2>&1 || sudo useradd --system --user-group --home-dir /nonexistent --shell /usr/sbin/nologin binance-monitor
+    sudo install -d -o root -g binance-monitor -m 0750 /opt/binance-monitor
+    sudo install -m 0644 monitor.py .env.example binance-monitor.service /opt/binance-monitor/
+    sudo test -e /opt/binance-monitor/.env || sudo install -o root -g binance-monitor -m 0640 .env.example /opt/binance-monitor/.env
+    sudo install -d -o binance-monitor -g binance-monitor -m 0700 /var/lib/binance-monitor
+
+4. 编辑配置：
+
+    sudo nano /opt/binance-monitor/.env
+
+   填入以下两项真实值，不要保留占位符：
+
+    FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/你的地址
+    FEISHU_SECRET=你的签名密钥
+    MONITOR_INTERVAL=30
+    MONITOR_MAX_PAGES=100
+
+   然后确保只有 root 与服务账号组可读：
+
+    sudo chown root:binance-monitor /opt/binance-monitor/.env
+    sudo chmod 640 /opt/binance-monitor/.env
+
+   无需 source 或 export，也不要将这个文件配置为 systemd EnvironmentFile；
+   本程序自行读取它，以保持前台和服务模式的解析规则一致。
+   服务文件通过命令行将数据固定到 /var/lib/binance-monitor，优先于 MONITOR_DATA_DIR。
+   要改变服务数据目录，需同时调整 ExecStart、StateDirectory、ReadWritePaths 及权限。
+
+5. 先用服务账号检查，确认服务器能读取记录并发送飞书消息：
+
+    sudo -u binance-monitor /usr/bin/python3 /opt/binance-monitor/monitor.py --check
+    sudo -u binance-monitor /usr/bin/python3 /opt/binance-monitor/monitor.py --test-feishu
+
+   --check 只读公开记录；--test-feishu 会向机器人所在群发送一条测试消息。
+   这两个命令不建立监控基准。测试通过后再启动长期监控。
+   若服务器 IP 受币安访问/区域限制，代码不能保证在该网络下正常工作。
+   飞书签名错误请检查 secret 和系统时间；设置关键词时可用“熬鹰资本”。
+
+6. 安装服务，启动并设置开机自启：
+
+    sudo install -m 0644 /opt/binance-monitor/binance-monitor.service /etc/systemd/system/binance-monitor.service
+    sudo systemd-analyze verify /etc/systemd/system/binance-monitor.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now binance-monitor
+    sudo systemctl status binance-monitor --no-pager
+
+   首次启动会扫描可见历史并静默建立基准，通常需要数十秒。
+   启动后可以关闭 SSH，systemd 会继续管理进程，并在异常退出后约 30 秒重启。
+   连续快速启动失败会触发启动限额；修复原因后运行 systemctl reset-failed 再启动。
+   网络失败由程序退避重试，不会造成进程频繁重启。
+
+查看日志和健康状态：
+
+    sudo journalctl -u binance-monitor -f
+    sudo cat /var/lib/binance-monitor/health.json
+    sudo tail -n 50 /var/lib/binance-monitor/monitor.log
+
+日志中的“检查成功”及 health.json 的 last_success 表示实际抓取成功，
+仅 systemctl 显示 active 不代表币安或飞书网络正常。
+pending_notifications 持续增加时应检查通知配置/网络。
+
+修改 .env 后重启：
+
+    sudo systemctl restart binance-monitor
+
+停止 / 取消开机自启：
+
+    sudo systemctl stop binance-monitor
+    sudo systemctl disable binance-monitor
+
+升级代码：先 stop，替换 /opt/binance-monitor/monitor.py，再 start。
+保留 /opt/binance-monitor/.env 和 /var/lib/binance-monitor/，不要重新复制空配置覆盖密钥。
+若修改了服务文件，还需要重新 install 服务文件并执行 systemctl daemon-reload。
+
+迁移本机历史：先停止本机监控，确保数据库不再写入，将整个 data 目录内容
+（包括可能存在的 SQLite -wal / -shm 文件）复制到服务器 /var/lib/binance-monitor/。
+服务器服务此时也应停止；复制后执行：
+
+    sudo chown -R binance-monitor:binance-monitor /var/lib/binance-monitor
+
+迁移后会继续原有基准与待发队列。若本机曾启用桌面提醒，服务器不支持该通道，
+其历史待发项会保留；飞书通道仍独立正常工作。不要让本机与服务器同时监控同一群，
+否则两个独立数据库可能分别发送同一笔操作。
+
+仅临时前台运行时：在解压目录复制 .env.example 为 .env 并填写，然后执行
+python3 monitor.py。SSH 退出可能结束该进程，长期运行请使用上述服务。
+
+服务管理配置参考：
+https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html
+https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html

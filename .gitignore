@@ -1,0 +1,11 @@
+data/
+__pycache__/
+.env
+.env.*
+!.env.example
+.DS_Store
+*.pyc
+*.log
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
