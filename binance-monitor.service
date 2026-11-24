@@ -2,6 +2,7 @@
 Description=Binance public trade monitor for Ying Capital
 Wants=network-online.target
 After=network-online.target
+OnFailure=binance-monitor-health.service
 StartLimitIntervalSec=300
 StartLimitBurst=5
 

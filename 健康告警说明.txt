@@ -1,0 +1,92 @@
+独立健康告警与已有服务器升级
+
+健康检查由独立 healthcheck.py 和 systemd timer 执行，不导入 monitor.py。
+主程序语法错误、进程退出、重启耗尽都不影响健康检查进程自身启动。
+默认使用飞书，消息始终包含“熬鹰资本”，可满足同名关键词规则。
+
+已经按此前步骤部署的服务器：在原 Git 仓库目录执行
+
+    git pull --ff-only
+    sudo bash install-health.sh
+
+脚本安装最新主程序、健康检查程序和三个 systemd 单元；重启主服务并开启健康检查。
+保留 /opt/binance-monitor/.env 和 /var/lib/binance-monitor/ 中全部交易状态。
+首次自动将 .env 复制为独立的 /opt/binance-monitor/health.env，复用飞书机器人。
+已有 health.env 时不覆盖。修改主程序 .env 不会自动修改健康告警的机器人凭据。
+如需更换告警机器人，请单独编辑 health.env；每次检查均重新读取，无需重启 timer。
+新部署请先完成《服务器部署.txt》的账号、目录和 .env 设置。
+
+手动验证独立告警通道（会向飞书群发送测试消息）：
+
+    sudo -u binance-monitor /usr/bin/python3 /opt/binance-monitor/healthcheck.py --test-notification
+
+查看定时检查与日志：
+
+    sudo systemctl status binance-monitor-health.timer --no-pager
+    sudo systemctl list-timers binance-monitor-health.timer --all
+    sudo journalctl -u binance-monitor-health.service -n 50 --no-pager
+    sudo cat /var/lib/binance-monitor-health/state.json
+
+默认行为：
+- 定时检查每次结束约 60 秒后再运行，允许 5 秒调度偏差；网络请求会增加耗时。
+- 主服务进入失败状态时，OnFailure 也可触发即时检查；不依赖该触发才检测故障。
+- 服务 failed / inactive / auto-restart：检查发现后告警，包括人工停止。
+- 主进程运行，但 5 分钟未成功抓取或未更新状态：告警。
+- 当前启用的通知通道积压超过 5 分钟：告警。
+- 主进程启动后有 180 秒宽限，允许建立历史基准；失败/停止状态不享受此宽限。
+- 连续检查发现反复重启且始终未完成数据读取时，也会告警，不会无限刷新启动宽限。
+- 同一种持续故障每 30 分钟提醒一次；故障类型改变时更新告警。
+- 只有当前进程运行、最近抓取成功且无超时通知积压时才发送恢复通知。
+- 首次健康检查通过会发送“运行正常”；之后默认每 24 小时发送健康摘要。
+- 飞书发送失败时，告警保留在独立 state.json 队列，下次检查继续发送。
+  即使故障在网络恢复前已经恢复，也会依次补发故障与恢复消息；消息含原始检测时间。
+  发送确认与本地保存之间若进程退出，可能再次发送同一条消息。
+
+修改阈值可参考 health.env.example，在 /opt/binance-monitor/health.env 追加：
+
+    HEALTH_STALE_SECONDS=300
+    HEALTH_STARTUP_GRACE=180
+    HEALTH_BACKLOG_SECONDS=300
+    HEALTH_REPEAT_SECONDS=1800
+    HEALTH_REPORT_SECONDS=86400
+
+HEALTH_REPORT_SECONDS=0 关闭定期健康摘要，首次健康确认及恢复消息仍发送。
+实际抓取/状态超时阈值至少为 MONITOR_INTERVAL 的 3 倍加 60 秒，以支持较长检查周期。
+故障检查以“是否成功读取”为依据，不以交易员是否有新交易为依据；没有新交易不会误报。
+健康服务检测到异常时返回非零退出码，因此 health.service 显示 failed 可能表示已经
+发现并发送了业务故障告警，不代表 timer 停止；timer 仍会按周期再执行。请同时查看日志。
+不自动重启卡死进程，健康检查负责通知；主服务异常退出仍由原有 Restart=on-failure 处理。
+
+可选的故障演练（会暂停交易监控并真实发送故障/恢复消息）：
+
+    sudo systemctl stop binance-monitor
+    sudo systemctl start binance-monitor-health.service
+
+此时健康检查返回失败状态属于预期，飞书应收到“服务未运行”。然后恢复：
+
+    sudo systemctl start binance-monitor
+
+等待主程序出现“检查成功”且下次健康检查运行，飞书应收到恢复消息。
+日常维护不希望收到停止提醒时，先 stop binance-monitor-health.timer 和 health.service，
+维护完成后再 start timer；真正失败仍可能由主服务 OnFailure 触发检查。
+不要长期停用 timer，否则正常停止、卡住或持续 API 错误将无法被定期发现。
+
+整机断电、断网，以及告警通道自身失效
+
+同一台服务器上的脚本无法在整机离线时发送消息；飞书 Webhook 被删除或飞书无法访问时，
+同一个飞书通道也无法通知“飞书故障”。若需覆盖这些情况，必须配置独立于服务器的外部
+心跳监控，并在外部服务中设置自己的告警接收人（最好另有邮件等备用通道）。
+
+健康检查支持可选的 HTTPS GET 心跳地址，在 health.env 设置：
+
+    HEALTH_HEARTBEAT_URL=你的外部心跳监控接收地址
+
+地址必须是外部服务提供的“收到请求即续期”地址，不是普通飞书 Webhook。
+建议外部预期周期设 1 分钟、容忍窗口设 5 分钟；程序健康且告警队列投递完成后才发送心跳。
+服务器关机/断网、健康检查 timer 停止、主程序故障或告警投递持续失败都会停止健康心跳。
+请先在外部服务启用检查、设置接收人，再通过短暂停止 timer 验证“缺失心跳”通知。
+本项目不会自动注册外部服务，默认该地址为空，因此默认不覆盖整机离线告警。
+
+告警程序配置损坏、无法写入自己的状态目录或自身运行失败时会记录系统日志；
+外部缺失心跳监控也可覆盖这些情况。请保护 health.env 和告警状态目录权限。
+当前没有你的服务器连接信息；本次仅交付并测试代码，服务器端安装及群消息到达需按上面验证。

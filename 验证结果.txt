@@ -38,3 +38,15 @@ SKHYNIXUSDT，BUY + SHORT，减空 / 平空
 - 已提供 systemd 服务模板和 Ubuntu / Debian 部署说明；当前主机为 macOS，
   未在真实 Linux systemd 环境安装或启动服务，文档包含服务器端验证命令。
 - 本机创建的是空值 .env；压缩包仅含 .env.example，不打包真实 .env 和 data。
+
+独立健康告警扩展：
+- 全套 36 项测试通过，Python 3.9 语法、Python 编译、安装脚本 bash 语法及单元文件基本一致性检查通过。
+- 新增独立 healthcheck.py、systemd service/timer、健康配置示例及保留状态的升级脚本。
+- 模拟验证服务停止/失败/重启耗尽、启动宽限、旧进程状态、心跳过期、抓取过期、
+  通知积压、错误时间戳、状态损坏、systemd 查询失败、告警去重及恢复/每日摘要。
+- 模拟验证飞书失败持久化，恢复后先补发故障再发送恢复，以及仅健康时发送外部心跳。
+- 独立子进程验证：即使同目录 monitor.py 存在语法错误，healthcheck.py 仍可启动。
+- 主程序集成测试验证 health.json 的当前 PID、成功时间、积压通道与数量。
+- 本机 Docker daemon 未运行，未进行真实 Linux systemd 安装/故障演练；
+  安装脚本会在服务器执行 systemd-analyze verify，文档包含实际通知与故障演练命令。
+- 未使用真实飞书凭据，也未向真实群或外部心跳平台发送消息。

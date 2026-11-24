@@ -1,4 +1,6 @@
 import copy
+import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +20,29 @@ def row(t, **changes):
 
 
 class MonitorTests(unittest.TestCase):
+    def test_main_writes_current_process_health_and_notification_backlog(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / '.env').write_text('')
+            with patch.dict('os.environ', {}, clear=True), \
+                 patch('sys.argv', ['monitor.py', '--once', '--env-file', str(directory / '.env'),
+                                    '--data-dir', str(directory / 'data')]), \
+                 patch('monitor.signal.signal'), patch('monitor.logging.basicConfig'), \
+                 patch('monitor.RotatingFileHandler'), \
+                 patch('monitor.Binance') as client, \
+                 patch('monitor.configured_feishu', return_value=Mock(side_effect=RuntimeError('offline'))):
+                client.return_value.fetch.return_value = [row(1000)]
+                self.assertEqual(main(), 0)
+                client.return_value.fetch.return_value = [row(1000), row(2000)]
+                with self.assertLogs('monitor', 'ERROR'):
+                    self.assertEqual(main(), 1)
+                health = json.loads((directory / 'data' / 'health.json').read_text())
+                self.assertEqual(health['pid'], os.getpid())
+                self.assertGreaterEqual(health['updated_at'], float(health['last_success']))
+                self.assertEqual(health['poll_interval'], 30)
+                self.assertEqual(health['notification_backlog']['feishu']['count'], 1)
+                self.assertNotIn('console', health['notification_backlog'])
+
     def test_env_file_quotes_comments_and_literal_secrets(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / '.env'

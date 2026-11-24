@@ -414,6 +414,7 @@ def main():
         senders['telegram'] = telegram_sender(token, chat)
     with single_instance(args.data_dir / 'monitor.lock'):
         store = Store(args.data_dir / 'records.sqlite3')
+        started_at = time.time()
         failures, verified_at = 0, 0
         LOG.info('开始监控熬鹰资本；间隔 %s 秒；通知通道 %s', args.interval, ','.join(senders))
         try:
@@ -429,7 +430,7 @@ def main():
                     full = now - float(store.get('last_full', '0')) >= 3600
                     cutoff = None if full else (float(store.get('last_success', '0')) - 86400) * 1000
                     rows = client.fetch(cutoff)
-                    initial, added = store.save(rows, now, full, senders)
+                    initial, added = store.save(rows, time.time(), full, senders)
                     failures = 0
                     if initial:
                         LOG.info('已建立基准：%s 条历史记录；后续新记录才触发提醒', len(rows))
@@ -445,6 +446,15 @@ def main():
                     status['error'] = str(exc)
                 status['last_success'] = store.get('last_success')
                 status['pending_notifications'] = store.db.execute('SELECT COUNT(*) FROM outbox WHERE delivered=0').fetchone()[0]
+                # 只统计当前启用通道，避免停用通道的旧队列造成健康误报。
+                pending = store.db.execute('''SELECT o.channel, COUNT(*), MIN(r.detected)
+                    FROM outbox o JOIN records r ON r.id=o.id WHERE o.delivered=0
+                    GROUP BY o.channel''').fetchall()
+                status['notification_backlog'] = {
+                    channel: {'count': count, 'oldest_at': oldest}
+                    for channel, count, oldest in pending if channel in senders}
+                status.update(updated_at=time.time(), started_at=started_at, pid=os.getpid(),
+                              poll_interval=args.interval)
                 temp = args.data_dir / 'health.tmp'
                 temp.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding='utf-8')
                 temp.replace(args.data_dir / 'health.json')

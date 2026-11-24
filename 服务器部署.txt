@@ -57,13 +57,15 @@ Linux 服务器部署（systemd）
    若服务器 IP 受币安访问/区域限制，代码不能保证在该网络下正常工作。
    飞书签名错误请检查 secret 和系统时间；设置关键词时可用“熬鹰资本”。
 
-6. 安装服务，启动并设置开机自启：
+6. 安装主服务和独立健康告警，启动并设置开机自启（在 Git 仓库目录执行）：
 
-    sudo install -m 0644 /opt/binance-monitor/binance-monitor.service /etc/systemd/system/binance-monitor.service
-    sudo systemd-analyze verify /etc/systemd/system/binance-monitor.service
-    sudo systemctl daemon-reload
-    sudo systemctl enable --now binance-monitor
+    sudo bash install-health.sh
     sudo systemctl status binance-monitor --no-pager
+    sudo systemctl status binance-monitor-health.timer --no-pager
+    sudo -u binance-monitor /usr/bin/python3 /opt/binance-monitor/healthcheck.py --test-notification
+
+   安装脚本首次复用 .env 中的飞书配置创建独立 health.env；如未启用飞书，需先填写。
+   原 .env 和数据库均保留。健康告警的阈值、独立配置及外部心跳详见《健康告警说明.txt》。
 
    首次启动会扫描可见历史并静默建立基准，通常需要数十秒。
    启动后可以关闭 SSH，systemd 会继续管理进程，并在异常退出后约 30 秒重启。
@@ -89,9 +91,9 @@ pending_notifications 持续增加时应检查通知配置/网络。
     sudo systemctl stop binance-monitor
     sudo systemctl disable binance-monitor
 
-升级代码：先 stop，替换 /opt/binance-monitor/monitor.py，再 start。
+升级代码：在仓库执行 git pull --ff-only，然后 sudo bash install-health.sh。
 保留 /opt/binance-monitor/.env 和 /var/lib/binance-monitor/，不要重新复制空配置覆盖密钥。
-若修改了服务文件，还需要重新 install 服务文件并执行 systemctl daemon-reload。
+安装脚本同时更新服务文件并执行 daemon-reload；已有 health.env 不覆盖。
 
 迁移本机历史：先停止本机监控，确保数据库不再写入，将整个 data 目录内容
 （包括可能存在的 SQLite -wal / -shm 文件）复制到服务器 /var/lib/binance-monitor/。
